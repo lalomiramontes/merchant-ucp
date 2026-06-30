@@ -20,22 +20,46 @@ for development and PoC; not acceptable for production.
 
 ---
 
-## [2026-06] Single VM, Docker for service isolation
+## [2026-06] Hermes runs locally, not on the VPS
 
-**Decision**: Deploy all services (merchant server, Hermes, PostgreSQL) on a
-single Oracle Cloud VM, isolated via Docker containers.
+**Decision**: Hermes Agent runs on the developer's laptop with a Docker-sandboxed
+terminal backend. It is not deployed on the Oracle VPS.
 
-**Reasoning**: Oracle Cloud Always Free (PAYG) provides 4 OCPUs and 24 GB RAM
-on a single VM.Standard.A1.Flex instance. This is more than sufficient for
-a PoC. Running multiple VMs adds networking complexity with no benefit at
-this stage.
+**Reasoning**: The original plan assumed both the merchant server and Hermes
+would run on the same VPS instance. After provisioning, the actual free-tier
+instance available was smaller than initially planned (2 OCPU / 12 GB RAM,
+not the originally expected 4 OCPU / 24 GB). Running an LLM-driven agent
+alongside the merchant server on a constrained instance was deprioritized —
+the merchant server is the production-facing component and gets the VPS
+resources; Hermes, as a development/testing tool, runs locally where resources
+are not a concern.
 
-Docker provides process isolation (blast radius containment if Hermes behaves
-unexpectedly) without the overhead of full VM separation.
+**Trade-off**: Hermes must reach the merchant server over the public network
+(VPS public address) rather than over localhost. This required opening the
+relevant port both in OCI's Security List (network-level firewall) and in the
+VM's local `iptables` rules (OS-level firewall) — two independent layers that
+both needed explicit allow rules.
 
-**Future**: When production load justifies it, split DB to a separate VM and
-add a Load Balancer in front of multiple merchant server instances. Oracle
-free tier supports this within the same resource pool.
+---
+
+## [2026-06] Docker as Hermes' sandboxed backend
+
+**Decision**: Run Hermes with `terminal.backend: docker` rather than `local`,
+after first validating the agent works correctly in local mode.
+
+**Reasoning**: Hermes (the LLM, via Gemini) decides what commands to run;
+Hermes-the-program (the agent framework) is what actually executes them. The
+risk is not that Hermes misbehaves on its own, but that the underlying LLM
+makes a poor decision (ambiguous instruction, prompt injection from a fetched
+web page, etc.) and the framework faithfully executes it. Docker contains
+that risk by isolating where commands actually run, without requiring
+separate hardware (the originally considered alternative: a dedicated Mac
+Mini or Raspberry Pi for agent isolation).
+
+Validated first in `local` mode (per official quickstart guidance — confirm
+the agent works before adding isolation, to avoid debugging both at once),
+then switched to `docker` with no behavior change and no measurable latency
+difference.
 
 ---
 
@@ -45,9 +69,9 @@ free tier supports this within the same resource pool.
 cross-compiling from the local x86_64 laptop.
 
 **Reasoning**: Cross-compilation adds toolchain complexity (linkers, sysroots)
-with no practical benefit for a single-developer project. The VPS has ample
-CPU and RAM for native compilation. Workflow: develop locally → git push →
-git pull on VPS → cargo build --release.
+with no practical benefit for a single-developer project. Rust on ARM is
+mature enough that `cargo build` works without extra configuration. Workflow:
+develop locally → git push → git pull on VPS → cargo build --release.
 
 Docker buildx multi-arch would be the right choice if deploying to multiple
 instances simultaneously, but that is not the current requirement.
@@ -66,19 +90,28 @@ commerce lifecycle; UCP knowledge transfers directly to ACP implementation.
 
 ---
 
-## [2026-06] Hermes + Gemini Flash for the buyer agent
+## [2026-06] Hermes + Gemini for the buyer agent
 
 **Decision**: Use Hermes (Nous Research) as the autonomous buyer agent,
-backed by Gemini Flash via Google AI Studio free tier.
+backed by a Gemini model via Google AI Studio free tier.
 
 **Reasoning**: Hermes is skill-driven — the buyer behavior is defined in a
 Markdown file, not code. This keeps the agent layer configuration rather than
 programming, and provides hands-on experience with the agent framework itself.
-Gemini Flash free tier (1,500 req/day, no credit card) is sufficient for
-simulating UCP purchases in development.
 
-Fallback: Groq free tier (14,400 req/day, Llama/DeepSeek models) if Gemini
-rate limits become an issue.
+**Lesson learned**: free-tier rate limits vary significantly *per model*, not
+uniformly across "the free tier." A model release (e.g. a newer Flash variant)
+can carry a much lower free quota than an adjacent one (e.g. a Lite variant).
+The practical model choice was driven by checking actual per-model quotas in
+the provider dashboard rather than assuming newer/default means better quota.
+
+**Lesson learned**: without a skill, the agent reliably guesses REST endpoint
+paths by trial and error (`/checkout`, `/checkout/create`, `/sessions`, etc.)
+rather than failing fast — burning many requests and tokens per attempt. This
+both wastes quota and pollutes context size, accelerating rate-limit errors.
+A skill with explicit, fixed paths eliminates this entirely — confirmed with
+a side-by-side test (no skill vs. with skill) against the same merchant
+server.
 
 ---
 
@@ -95,17 +128,44 @@ makes the codebase more generally useful.
 
 ---
 
-## [2026-06] Oracle Cloud Always Free (PAYG) as infrastructure
+## [2026-06] Oracle Cloud as infrastructure — chosen with eyes open
 
-**Decision**: Use Oracle Cloud PAYG account for VPS hosting.
+**Decision**: Use Oracle Cloud Infrastructure for VPS hosting at the PoC stage.
 
-**Reasoning**: Oracle Always Free provides 4 OCPUs ARM + 24 GB RAM + 200 GB
-storage permanently at no cost — the most generous free tier in the market.
-PAYG account eliminates idle instance reclamation risk.
+**Reasoning**: OCI's Always Free tier remains the most generous permanent free
+compute offer in the market (ARM compute + generous storage, no expiration),
+clearly ahead of alternatives — AWS dropped its 12-month free tier for new
+accounts in 2025 in favor of shorter-lived credits, GCP's free tier is more
+limited (1 GB RAM instance), and paid alternatives (Hetzner, Vultr) are not
+free even if cheap.
 
-**Known risks**:
-- Home region US West (San Jose) is a popular region — possible "out of
-  capacity" errors when creating ARM instances. Mitigation: retry periodically.
-- No SLA on free tier. Acceptable for PoC; not for production.
-- If instance creation repeatedly fails, fallback is Google Cloud free tier
-  (e2-micro, 1 GB RAM) — sufficient for the merchant server binary alone.
+**Known risk, confirmed firsthand**: the account upgrade process (Always Free
+→ Pay-As-You-Go) took over two weeks and required escalating through multiple
+support tickets and tax-document verification before resolving. Independent
+reviews corroborate that OCI support for small/individual accounts is
+inconsistent — in contrast to reportedly strong support for enterprise
+accounts with dedicated solutions architects. This is treated as a real,
+documented signal, not just a one-off bad experience.
+
+**Implication for production**: this project remains a learning lab / PoC,
+not a production deployment, and the infrastructure choices reflect that
+(no auth, no HTTPS, no monitoring — see `architecture.md` Phase 5). When this
+project moves toward any real exposure, the OCI support experience is a
+genuine input into re-evaluating the hosting provider — likely toward a paid
+plan (OCI or otherwise) where support quality is less of an open question,
+rather than assuming free tier scales smoothly into production.
+
+---
+
+## [2026-06] Operational details kept out of architecture.md
+
+**Decision**: Instance-specific details (exact CPU/RAM allocation, public IP,
+exact region, account upgrade status) are not recorded in `architecture.md`.
+
+**Reasoning**: These details are either ephemeral (an IP or instance spec can
+change on recreation) or not useful to a reader trying to understand the
+system's design. `architecture.md` is treated as a living description of the
+system aimed at being useful to any reader, including a future external one;
+operational/account-specific detail lives here in `decisions.md` (as
+reasoning/context) or in untracked local notes, not in the public-facing
+architecture description.
