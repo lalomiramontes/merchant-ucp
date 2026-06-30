@@ -1,2 +1,5 @@
 target/
 docs/private-notes.md
+.env
+*.env
+
