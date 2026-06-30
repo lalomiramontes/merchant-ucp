@@ -169,3 +169,118 @@ system aimed at being useful to any reader, including a future external one;
 operational/account-specific detail lives here in `decisions.md` (as
 reasoning/context) or in untracked local notes, not in the public-facing
 architecture description.
+
+---
+
+## [2026-06] PostgreSQL via SQLx, behind a CheckoutStore trait
+
+**Decision**: Replace the in-memory HashMap store with PostgreSQL, accessed
+through SQLx 0.8.6 with compile-time checked queries. The store is accessed
+through a `CheckoutStore` trait rather than a concrete type.
+
+**Reasoning**: SQLx's `query!`/`query_as!` macros validate SQL against the
+live schema at compile time, catching column/type mismatches before runtime.
+The trait abstraction (`insert`/`get`/`save`) keeps `routes/checkout.rs`
+storage-agnostic, so a second backend (Oracle ADB, planned post-Phase-5 — see
+entry below) can be added later without touching route handlers.
+
+**Trade-off**: compile-time query checking requires a live, migrated
+Postgres instance at `cargo build` time — not just at runtime. This was
+resolved for environments without a readily available live DB connection
+(e.g. the VPS, on a fresh SSH session) via `cargo sqlx prepare`, which
+caches query metadata in `.sqlx/` so builds can succeed without querying a
+live database at compile time.
+
+**Schema notes**: `status` is `TEXT` with a `CHECK` constraint listing the
+six lifecycle states, rather than a native Postgres `ENUM` — easier to
+evolve via a future migration than `ALTER TYPE`. `line_items`, `buyer`, and
+`messages` are stored as `JSONB` rather than normalized into separate
+tables, matching the nested-struct shape already used in memory and
+avoiding premature relational modeling. `id` is `TEXT` (not `UUID`) to
+preserve the existing `chk_{uuid_simple}` format without bidirectional
+conversion.
+
+**Validated**: full checkout lifecycle (create, get, update, complete,
+cancel) via curl, including 404 and 409 error paths, with persistence
+confirmed across a server restart — both locally and on the VPS, including
+an end-to-end run by Hermes (buyer agent) against the VPS deployment.
+
+---
+
+## [2026-06] systemd service for the merchant server
+
+**Decision**: Run the merchant server on the VPS as a systemd service
+(`merchant-server.service`) instead of a manually-started `cargo run`
+process.
+
+**Reasoning**: Closes the operational gap noted in earlier private notes
+(manual restart required after VM reboot or crash). `Restart=always`
+recovers from crashes; `enable` ensures the service survives VM reboots;
+`Requires=postgresql.service` sequences startup so the server doesn't
+attempt to connect before Postgres is ready.
+
+**Implementation note**: the unit file points `EnvironmentFile` at the
+existing `.env` (containing `DATABASE_URL` and `BASE_URL`) rather than
+duplicating those values into a separate systemd-specific file — fewer
+places for the two to drift out of sync.
+
+**Status**: this closes the previously-documented operational gap of the
+server requiring manual intervention after every VM reboot. The server now
+starts automatically on boot and restarts automatically on crash.
+
+---
+
+## [2026-06] Hermes Docker sandbox has its own network namespace
+
+**Observation, refining the earlier "Docker as Hermes' sandboxed backend"
+decision**: the `docker-compose.yml` gateway service runs with
+`network_mode: host`, but the ephemeral sandbox container Hermes spins up
+per session (image `nikolaik/python-nodejs`, random container name suffix)
+does NOT inherit host networking — it runs on Docker's default bridge
+network, isolated from the host's `localhost`.
+
+**Implication**: this is a real (if partial) limitation on the isolation
+rationale documented in the original Docker decision — the gateway's host
+networking was likely chosen for convenience, but the actual
+command-execution sandbox is more isolated from the host than that one line
+suggested, which is closer to the original "limit blast radius" intent.
+Confirmed via `docker exec <sandbox-container> curl -v
+http://localhost:3000` (connection refused) vs. successfully reaching the
+host via the Docker bridge gateway IP (`172.17.0.1` in this environment —
+not a fixed or portable address across machines).
+
+**Practical consequence**: testing Hermes against a merchant server running
+on localhost requires either the bridge gateway IP or running the merchant
+server itself inside the same Docker network — neither matches the
+realistic target scenario. The actually-validated pattern remains Hermes
+(local, Docker) against the publicly reachable VPS address, which has no
+such networking complication and is the same pattern used in Phase 1.
+
+---
+
+## [2026-06] Oracle ADB as a second CheckoutStore implementation — scheduled, not speculative
+
+**Decision**: Implement `OracleCheckoutStore` as a second implementation of
+the `CheckoutStore` trait, using Oracle Autonomous Database (Always Free
+tier), after Phase 5 (Security) is complete.
+
+**Reasoning**: The PAYG account includes two free Autonomous DB instances
+at no additional cost. Evaluated against just using PostgreSQL exclusively:
+SQLx has no Oracle backend, so this requires a separate crate (`oracle`,
+an OCI/ODPI-C binding) without SQLx's compile-time query checking or as
+mature an async pool. Given that mismatch, duplicating the full Phase 2
+effort immediately was rejected in favor of designing `CheckoutStore` as a
+trait from the start, so a second implementation is additive later rather
+than a rewrite.
+
+**Why not Oracle instead of Postgres from the start**: SQLx — the intended
+access layer — does not support Oracle, only PostgreSQL, MySQL/MariaDB,
+SQLite, and MSSQL. Oracle's SQL dialect also differs meaningfully
+(`VARCHAR2`/`NUMBER`/`SYSDATE`/sequences vs. Postgres types), so migrations
+are not portable between the two without rewriting. PostgreSQL was kept as
+the primary store; Oracle ADB is additive, not a replacement.
+
+**Scope boundary**: explicitly scheduled as the next phase after Phase 5
+(Security), not deferred indefinitely — avoids the project drifting into
+permanently-open-ended "someday" work while still giving the Oracle
+Always-Free resources a real use within this project.
