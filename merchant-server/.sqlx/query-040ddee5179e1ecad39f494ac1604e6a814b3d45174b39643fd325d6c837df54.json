@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE checkouts SET\n                status = $2, line_items = $3, buyer = $4, total = $5,\n                currency = $6, messages = $7, continue_url = $8,\n                payment_handler_id = $9, updated_at = $10\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Int8",
+        "Text",
+        "Jsonb",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "040ddee5179e1ecad39f494ac1604e6a814b3d45174b39643fd325d6c837df54"
+}

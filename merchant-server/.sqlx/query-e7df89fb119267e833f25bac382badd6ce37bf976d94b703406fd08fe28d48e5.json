@@ -1,0 +1,82 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                id, status, line_items, buyer, total, currency,\n                messages, continue_url, payment_handler_id,\n                created_at, updated_at\n            FROM checkouts WHERE id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "line_items",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 3,
+        "name": "buyer",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 4,
+        "name": "total",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "currency",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "messages",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "continue_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "payment_handler_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "e7df89fb119267e833f25bac382badd6ce37bf976d94b703406fd08fe28d48e5"
+}
