@@ -6,19 +6,21 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
-use store::CheckoutStore;
+use store::{CheckoutStore, PgCheckoutStore};
 
 /// Shared application state, cloned into every request handler.
 /// `base_url` is needed to build absolute URLs in the UCP profile response.
-/// `checkout_store` holds in-memory checkout sessions (Phase 1).
+/// `checkout_store` persists checkout sessions in PostgreSQL (Phase 2).
 #[derive(Clone)]
 pub struct AppState {
     pub base_url: String,
-    pub checkout_store: CheckoutStore,
+    pub checkout_store: Arc<dyn CheckoutStore>,
 }
 
 #[tokio::main]
@@ -28,9 +30,24 @@ async fn main() {
         .init();
 
     let base_url = std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+
+    let database_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set (e.g. postgres://user:pass@localhost/merchant_db)");
+
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
+        .await
+        .expect("failed to connect to Postgres");
+
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("failed to run database migrations");
+
     let state = AppState {
         base_url: base_url.clone(),
-        checkout_store: CheckoutStore::new(),
+        checkout_store: Arc::new(PgCheckoutStore::new(pool)),
     };
 
     let app = Router::new()

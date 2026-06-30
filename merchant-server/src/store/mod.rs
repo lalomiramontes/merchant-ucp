@@ -1,46 +1,37 @@
-use crate::models::checkout::Checkout;
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+//! Checkout persistence layer.
+//!
+//! `CheckoutStore` is the storage-agnostic interface used by the routes.
+//! Phase 2 implements it with PostgreSQL (see `postgres.rs`); a future
+//! Oracle ADB implementation can be added behind the same trait without
+//! touching `routes/checkout.rs`.
 
-/// In-memory checkout storage for Phase 1.
-/// Replaced by PostgreSQL in Phase 2 — see docs/architecture.md.
-///
-/// Wrapped in Arc<RwLock<..>> so it can be cloned cheaply into AppState
-/// and shared safely across concurrent request handlers.
-#[derive(Clone, Default)]
-pub struct CheckoutStore {
-    inner: Arc<RwLock<HashMap<String, Checkout>>>,
+mod postgres;
+
+pub use postgres::PgCheckoutStore;
+
+use async_trait::async_trait;
+use crate::models::checkout::Checkout;
+
+#[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    #[error("checkout session not found")]
+    NotFound,
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+    #[error("serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
 }
 
-impl CheckoutStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
+#[async_trait]
+pub trait CheckoutStore: Send + Sync {
+    /// Persists a brand-new checkout session. Callers are expected to pass
+    /// a checkout with an id that does not already exist in the store.
+    async fn insert(&self, checkout: Checkout) -> Result<(), StoreError>;
 
-    pub fn insert(&self, checkout: Checkout) {
-        self.inner
-            .write()
-            .expect("checkout store lock poisoned")
-            .insert(checkout.id.clone(), checkout);
-    }
+    /// Fetches a checkout session by id.
+    async fn get(&self, id: &str) -> Result<Checkout, StoreError>;
 
-    pub fn get(&self, id: &str) -> Option<Checkout> {
-        self.inner
-            .read()
-            .expect("checkout store lock poisoned")
-            .get(id)
-            .cloned()
-    }
-
-    /// Applies `f` to the checkout if it exists, persisting the mutation,
-    /// and returns the updated checkout.
-    pub fn update_with<F>(&self, id: &str, f: F) -> Option<Checkout>
-    where
-        F: FnOnce(&mut Checkout),
-    {
-        let mut guard = self.inner.write().expect("checkout store lock poisoned");
-        let checkout = guard.get_mut(id)?;
-        f(checkout);
-        Some(checkout.clone())
-    }
+    /// Persists an existing checkout session, overwriting its prior state.
+    /// Returns `StoreError::NotFound` if no session exists with this id.
+    async fn save(&self, checkout: &Checkout) -> Result<(), StoreError>;
 }
